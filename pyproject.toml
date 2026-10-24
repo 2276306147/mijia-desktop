@@ -1,0 +1,43 @@
+[project]
+name = "mijia-desktop"
+version = "1.0.0"
+description = "米家控制台 —— 基于 mijiaAPI 的 Windows 桌面客户端"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "MijiaDesktop" }]
+dependencies = [
+    "PySide6-Essentials>=6.6.0",
+    "mijiaAPI>=5.0.0",
+]
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6.6"]
+dev = ["ruff>=0.5"]
+
+[project.gui-scripts]
+mijia-console = "app.main:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["resources/*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+src = ["."]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "C"]
+ignore = ["E501", "C901"]
+
+[tool.ruff.format]
+quote-style = "double"
+line-ending = "lf"
