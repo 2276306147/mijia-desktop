@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/work/
+build/*.spec.bak
+dist/
+dist-nuitka/
+.venv/
+venv/
+
+# 应用数据（本地调试产生的凭证与缓存）
+.testhome/
+.mijia-api-data/
+*.har
+.venv-*
+
+# 截图与临时文件
+.shots/
+.tmp/
+.ruff_cache/
+tools/ruffbin*/
+ruff.whl
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.idea/
+.vscode/
