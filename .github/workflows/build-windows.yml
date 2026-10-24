@@ -1,0 +1,187 @@
+name: build-windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: "构建引擎"
+        type: choice
+        options: [pyinstaller, nuitka, both]
+        default: pyinstaller
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  issues: write
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  pyinstaller:
+    if: github.event_name != 'workflow_dispatch' || inputs.engine != 'nuitka'
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Generate icon
+        run: python tools/make_icon.py
+
+      - name: Build with PyInstaller
+        shell: pwsh
+        run: |
+          python -m PyInstaller build/mijia_desktop.spec --noconfirm --clean --workpath build/work --distpath dist 2>&1 |
+            Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller 构建失败" }
+
+      - name: Verify output
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/MijiaConsole/MijiaConsole.exe")) { throw "未生成 MijiaConsole.exe" }
+          $size = (Get-ChildItem dist/MijiaConsole -Recurse | Measure-Object Length -Sum).Sum / 1MB
+          "PyInstaller 产物体积: {0:N1} MB" -f $size | Out-File $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path dist/MijiaConsole/* -DestinationPath "dist/MijiaConsole-win64.zip" -Force
+
+      - name: Upload portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MijiaConsole-portable
+          path: dist/MijiaConsole-win64.zip
+          retention-days: 14
+
+      - name: Install Inno Setup
+        continue-on-error: true
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" build\installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup 编译失败" }
+
+      - name: Collect release assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path upload | Out-Null
+          Copy-Item dist/MijiaConsole-win64.zip upload/ -Force
+          if (Test-Path "dist/MijiaConsole-Setup-*.exe") {
+            Copy-Item dist/MijiaConsole-Setup-*.exe upload/ -Force
+          }
+          Get-ChildItem upload | Format-Table Name, Length
+
+      - name: Publish build
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('build-{0}', github.run_number) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('构建 #{0}', github.run_number) }}
+          prerelease: true
+          generate_release_notes: true
+          files: upload/*
+          body: |
+            自动构建产物（PyInstaller，Windows x64）。
+
+            - MijiaConsole-win64.zip：绿色版，解压后运行 MijiaConsole.exe
+            - MijiaConsole-Setup-*.exe：安装包（若构建成功）
+
+      - name: Report failure
+        if: failure()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          "构建 #${{ github.run_number }} 失败，日志尾部：" | Out-File failure.md -Encoding utf8
+          "---------------- 日志 ----------------" | Out-File failure.md -Append -Encoding utf8
+          if (Test-Path build.log) {
+            Get-Content build.log -Tail 60 | Out-File failure.md -Append -Encoding utf8
+          }
+          "---------------- 结束 ----------------" | Out-File failure.md -Append -Encoding utf8
+          gh issue create --title "构建失败 #${{ github.run_number }}" --body-file failure.md
+
+  nuitka:
+    if: github.event_name == 'workflow_dispatch' && (inputs.engine == 'nuitka' || inputs.engine == 'both')
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install nuitka ordered-set zstandard
+
+      - name: Generate icon
+        run: python tools/make_icon.py
+
+      - name: Build with Nuitka
+        shell: cmd
+        run: >
+          python -m nuitka
+          --standalone
+          --assume-yes-for-downloads
+          --enable-plugin=pyside6
+          --windows-console-mode=disable
+          --windows-icon-from-ico=app\resources\app.ico
+          --company-name=MijiaDesktop
+          --product-name=MijiaConsole
+          --file-version=1.0.0.0
+          --product-version=1.0.0.0
+          --include-data-dir=app\resources=resources
+          --include-package=mijiaAPI
+          --include-package=Crypto
+          --include-package=qrcode
+          --nofollow-import-to=tkinter,matplotlib,numpy,pandas,scipy,IPython
+          --output-dir=dist-nuitka
+          --output-filename=MijiaConsole.exe
+          --remove-output
+          run.py
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist-nuitka/run.dist/MijiaConsole.exe")) { throw "Nuitka 未生成产物" }
+          Compress-Archive -Path dist-nuitka/run.dist/* -DestinationPath "dist/MijiaConsole-nuitka-win64.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MijiaConsole-nuitka
+          path: dist/MijiaConsole-nuitka-win64.zip
+          retention-days: 14
+
+      - name: Publish build
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('nuitka-{0}', github.run_number) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('Nuitka 构建 #{0}', github.run_number) }}
+          prerelease: true
+          files: dist/MijiaConsole-nuitka-win64.zip
